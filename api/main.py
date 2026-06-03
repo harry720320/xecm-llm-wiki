@@ -122,10 +122,16 @@ async def _index_cached_document(
     content_hash = hashlib.sha256(content_bytes).hexdigest()
 
     text_content = None
-    simple_text_types = {"md", "txt", "csv", "svg", "json", "xml"}
+    simple_text_types = {"md", "txt", "csv", "svg", "json", "xml", "log", "yaml", "yml", "toml", "ini", "cfg"}
     needs_processing = ext in {"pdf", "pptx", "ppt", "docx", "doc", "xlsx", "xls", "html", "htm"}
 
     if ext in simple_text_types:
+        try:
+            text_content = content_bytes.decode("utf-8", errors="replace")
+        except Exception:
+            pass
+    elif not needs_processing:
+        # Unknown types: try as text, fall back to binary
         try:
             text_content = content_bytes.decode("utf-8", errors="replace")
         except Exception:
@@ -139,9 +145,10 @@ async def _index_cached_document(
         doc_id = existing[0]
         await db.execute(
             "UPDATE documents SET content = ?, file_size = ?, content_hash = ?, "
-            "mtime_ns = ?, last_indexed_at = datetime('now'), updated_at = datetime('now') "
+            "mtime_ns = ?, status = ?, last_indexed_at = datetime('now'), updated_at = datetime('now') "
             "WHERE id = ?",
-            (text_content, doc.size, content_hash, 0, doc_id),
+            (text_content, doc.size, content_hash, 0,
+             "ready" if text_content else "pending", doc_id),
         )
         await db.commit()
     else:
@@ -211,6 +218,7 @@ async def _local_lifespan_inner(app: FastAPI):
 
     # ── xECM mode: discover and cache source documents from xECM ──
     _xecm_enabled = settings.XECM_ENABLED
+    logger.info("xECM mode: %s", "enabled" if _xecm_enabled else "disabled")
     if _xecm_enabled:
         from config import load_xecm_config
         from infra.xecm import XecmClient, XecmSourceReader
@@ -222,6 +230,7 @@ async def _local_lifespan_inner(app: FastAPI):
         xecm_ws = xecm_cfg.get("XECM_WORKSPACE") or settings.XECM_WORKSPACE
 
         if xecm_url and xecm_user and xecm_pass:
+            logger.info("xECM connecting to %s as %s", xecm_url, xecm_user)
             xecm_client = XecmClient(url=xecm_url, username=xecm_user, password=xecm_pass)
             try:
                 # "Enterprise" is the root workspace (node 2000)
@@ -239,6 +248,7 @@ async def _local_lifespan_inner(app: FastAPI):
 
                 if ws_id is not None:
                     source_docs = await XecmSourceReader(xecm_client).discover(ws_id)
+                    logger.info("xECM discovered %d documents", len(source_docs))
                     cache_root = workspace / ".llmwiki" / "cache" / "sources"
 
                     for doc in source_docs:
