@@ -1,19 +1,25 @@
-"""Local file serving route with Range support and path traversal protection.
+"""Local file serving route with Range support, path traversal protection,
+and xECM Content Server proxy support.
 
 Only active in local mode. Serves files from .llmwiki/cache/ (derived artifacts)
-and from the workspace root (source files).
+and from the workspace root (source files). xECM paths are proxied to Content Server.
 """
 
+import logging
 import mimetypes
 import os
 import platform
 import subprocess
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
+from config import settings
+
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["files"])
 
 _workspace_root: Path | None = None
@@ -41,8 +47,65 @@ def _resolve_safe(key: str) -> Path:
     raise HTTPException(status_code=404, detail="File not found")
 
 
+async def _proxy_xecm_file(key: str, range_header: str | None = None):
+    """Proxy a file request to xECM Content Server."""
+    if not settings.XECM_ENABLED or not settings.XECM_URL:
+        raise HTTPException(status_code=404, detail="xECM not configured")
+
+    # Parse key: xecm/{node_id}/{filename}
+    parts = key.split("/")
+    if len(parts) < 2:
+        raise HTTPException(status_code=404, detail="Invalid xECM path")
+    node_id = parts[1]
+    filename = parts[-1] if len(parts) > 2 else ""
+
+    # Get xECM auth
+    from infra.xecm import XecmClient
+    xecm = XecmClient(
+        url=settings.XECM_URL,
+        username=settings.XECM_USERNAME,
+        password=settings.XECM_PASSWORD,
+    )
+    try:
+        ticket = await xecm.authenticate()
+        client = httpx.AsyncClient(timeout=30.0)
+        headers = {"OTCSTicket": ticket}
+        if range_header:
+            headers["Range"] = range_header
+
+        url = f"{settings.XECM_URL.rstrip('/')}/api/v1/nodes/{node_id}/content"
+        resp = await client.get(url, headers=headers, follow_redirects=True)
+
+        content_type = resp.headers.get("content-type", "application/octet-stream")
+        content_length = resp.headers.get("content-length")
+
+        if resp.status_code == 206:
+            return StreamingResponse(
+                resp.aiter_bytes(8192),
+                status_code=206,
+                media_type=content_type,
+                headers={
+                    "Content-Range": resp.headers.get("content-range", ""),
+                    "Accept-Ranges": "bytes",
+                },
+            )
+
+        return StreamingResponse(
+            resp.aiter_bytes(8192),
+            media_type=content_type,
+            headers={"Accept-Ranges": "bytes"},
+        )
+    finally:
+        await xecm.close()
+
+
 @router.get("/v1/files/{key:path}")
 async def serve_file(key: str, request: Request):
+    # xECM files: proxy to Content Server
+    if key.startswith("xecm/") or key.startswith("xecm\\"):
+        range_header = request.headers.get("range")
+        return await _proxy_xecm_file(key, range_header)
+
     path = _resolve_safe(key)
 
     content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
