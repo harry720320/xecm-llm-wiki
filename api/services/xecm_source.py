@@ -42,10 +42,12 @@ class XecmSourceDocumentService(LocalDocumentService):
             return None
 
         if self._is_xecm(doc):
-            # Link to local file proxy which proxies to Content Server
-            api_url = settings.API_URL.rstrip("/")
+            # Proxy URL: /v1/files/xecm/{node_id} — just the node_id, no filename needed
             relative = doc.get("relative_path", "")
-            return {"url": f"{api_url}/v1/files/{relative}"}
+            parts = relative.split("/")
+            if len(parts) >= 2:
+                api_url = settings.API_URL.rstrip("/")
+                return {"url": f"{api_url}/v1/files/xecm/{parts[1]}"}
 
         return await super().get_url(doc_id)
 

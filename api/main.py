@@ -112,7 +112,10 @@ async def _index_cached_document(
     from pathlib import Path as _Path
     from services.chunker import chunk_text
 
-    relative = f"xecm/{doc.node_id}/{doc.name}"
+    # Use URL-safe name for the path (spaces/special chars break file URLs)
+    safe_name = doc.name.rsplit(".", 1)[0] if "." in doc.name else doc.name
+    safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in safe_name)
+    relative = f"xecm/{doc.node_id}/{safe_name}.{ext}"
     dir_path = f"/xecm/{doc.node_id}/"
     ext = doc.file_type
     stem = doc.name.rsplit(".", 1)[0] if "." in doc.name else doc.name
