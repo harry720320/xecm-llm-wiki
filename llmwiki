@@ -407,7 +407,10 @@ def cmd_wiki_generate(workspace: str) -> None:
     """Trigger wiki generation via the API server."""
     ws = _resolve_workspace(workspace)
     xecm_cfg = _load_xecm_config(ws)
-    api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN") or ""
+    api_key = (xecm_cfg.get("ANTHROPIC_API_KEY")
+               or os.environ.get("ANTHROPIC_API_KEY")
+               or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+               or "")
 
     if not api_key:
         print("Error: ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN must be set in environment.", file=sys.stderr)
