@@ -38,15 +38,24 @@ class XecmSourceDocumentService(LocalDocumentService):
         return await super().get_content(doc_id)
 
     async def get_url(self, doc_id: str) -> dict | None:
-        """Get URL for viewing/downloading a document."""
+        """Get URL for viewing/downloading a document.
+        xECM source docs link to the Content Server directly.
+        """
         doc = await self.doc_repo.get(doc_id)
         if not doc:
             return None
 
-        api_url = settings.API_URL.rstrip("/")
         relative = doc.get("relative_path", "")
 
         if relative.startswith("xecm/"):
+            # Extract node ID from path: xecm/{node_id}/{filename}
+            parts = relative.split("/")
+            if len(parts) >= 2:
+                node_id = parts[1]
+                xecm_url = settings.XECM_URL.rstrip("/")
+                return {"url": f"{xecm_url}/api/v1/nodes/{node_id}/content"}
+            # Fallback
+            api_url = settings.API_URL.rstrip("/")
             return {"url": f"{api_url}/v1/files/{relative}"}
 
         return await super().get_url(doc_id)

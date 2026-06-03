@@ -438,14 +438,68 @@ def cmd_wiki_generate(workspace: str) -> None:
     async def _run():
         db = await aiosqlite.connect(str(db_path))
         try:
+            # Count source docs
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM documents WHERE source_kind='source' AND status='ready'"
+            )
+            ready_count = (await cursor.fetchone())[0]
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM documents WHERE source_kind='source' AND status='pending'"
+            )
+            pending_count = (await cursor.fetchone())[0]
+            print(f"Source documents: {ready_count} ready, {pending_count} pending")
+
+            if ready_count == 0:
+                print("No ready source documents. Trying to process pending ones...")
+                await _process_pending_sources(db, ws, xecm_cfg)
+
             gen = WikiGenerator(db, str(ws))
             result = await gen.generate(kb_id="")
             print(f"Wiki generation: {result['status']}")
             print(f"Pages created: {result['pages_created']}")
+
+            # Clean up cache
+            if result['pages_created'] > 0:
+                _cleanup_cache(ws)
+
         finally:
             await db.close()
 
     asyncio.run(_run())
+
+
+def _process_pending_sources(db, ws: Path, xecm_cfg: dict) -> None:
+    """Extract text from pending source documents (PDFs etc.) using local processor."""
+    from domain.local_processor import process_document
+    import asyncio as _asyncio
+
+    cursor = db.execute(
+        "SELECT id, relative_path FROM documents WHERE source_kind='source' AND status='pending'"
+    )
+    rows = cursor.fetchall()
+    for doc_id, rel_path in rows:
+        print(f"  Processing: {rel_path}")
+        # The cached file is at .llmwiki/cache/sources/{node_id}/{filename}
+        cache_path = ws / ".llmwiki" / "cache" / "sources" / rel_path.replace("xecm/", "")
+        if cache_path.is_file():
+            # Create a temp symlink/copy in the workspace root so process_document can find it
+            import shutil
+            temp_path = ws / rel_path.replace("xecm/", "")
+            temp_path.parent.mkdir(parents=True, exist_ok=True)
+            if not temp_path.exists():
+                shutil.copy2(cache_path, temp_path)
+            _asyncio.run(process_document(db, doc_id, ws))
+    db.commit()
+
+
+def _cleanup_cache(ws: Path) -> None:
+    """Remove cached xECM source files after wiki generation."""
+    import shutil
+    cache_dir = ws / ".llmwiki" / "cache" / "sources"
+    if cache_dir.exists():
+        count = sum(1 for _ in cache_dir.rglob("*") if _.is_file())
+        shutil.rmtree(cache_dir)
+        print(f"Cache cleaned: {count} files removed")
 
 
 def cmd_wiki_status(workspace: str) -> None:

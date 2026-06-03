@@ -82,10 +82,12 @@ class WikiGenerator:
         return {"status": "complete", "pages_created": written}
 
     async def _gather_sources(self) -> list[dict]:
-        """Gather source document content from SQLite."""
+        """Gather source document content from SQLite.
+        Includes both ready and pending docs. Pending docs get metadata-only entries.
+        """
         cursor = await self._db.execute(
-            "SELECT id, filename, title, content, file_type, relative_path "
-            "FROM documents WHERE source_kind = 'source' AND status = 'ready' "
+            "SELECT id, filename, title, content, file_type, relative_path, status, file_size "
+            "FROM documents WHERE source_kind = 'source' AND status != 'failed' "
             "ORDER BY filename"
         )
         rows = await cursor.fetchall()
@@ -93,7 +95,20 @@ class WikiGenerator:
             return []
 
         cols = [d[0] for d in cursor.description]
-        return [dict(zip(cols, row)) for row in rows]
+        results = []
+        for row in rows:
+            doc = dict(zip(cols, row))
+            content = doc.get("content")
+            if not content:
+                # Include metadata for non-text files so the wiki covers them
+                doc["content"] = (
+                    f"[Binary file: {doc['filename']} "
+                    f"({doc.get('file_type', 'unknown')}, "
+                    f"{doc.get('file_size', 0)} bytes)]\n"
+                    f"This file was present in the workspace but its text could not be extracted."
+                )
+            results.append(doc)
+        return results
 
     async def _generate_pages(self, sources: list[dict]) -> list[dict]:
         """Call Anthropic API to generate wiki pages from source documents."""
