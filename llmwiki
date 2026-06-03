@@ -404,7 +404,7 @@ def cmd_reindex(workspace: str) -> None:
 
 
 def cmd_wiki_generate(workspace: str) -> None:
-    """Trigger wiki generation via the API server."""
+    """Run wiki generation directly (no server required)."""
     ws = _resolve_workspace(workspace)
     xecm_cfg = _load_xecm_config(ws)
     api_key = (xecm_cfg.get("ANTHROPIC_API_KEY")
@@ -413,27 +413,39 @@ def cmd_wiki_generate(workspace: str) -> None:
                or "")
 
     if not api_key:
-        print("Error: ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN must be set in environment.", file=sys.stderr)
+        print("Error: ANTHROPIC_API_KEY not set in .xecm_config or environment.", file=sys.stderr)
         sys.exit(1)
 
-    import urllib.request
-    import json as _json
-
-    api_url = "http://localhost:8000"
-    try:
-        req = urllib.request.Request(
-            f"{api_url}/v1/wiki/generate",
-            method="POST",
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            result = _json.loads(resp.read())
-            print(f"Wiki generation: {result.get('status', 'unknown')}")
-            print(f"Pages created: {result.get('pages_created', 0)}")
-    except urllib.error.URLError as e:
-        print(f"Error: Could not reach API server at {api_url}", file=sys.stderr)
-        print(f"  Make sure the server is running: llmwiki serve {ws}", file=sys.stderr)
+    db_path = ws / ".llmwiki" / "index.db"
+    if not db_path.exists():
+        print(f"Error: No index found. Run: llmwiki init {ws}", file=sys.stderr)
         sys.exit(1)
+
+    # Set env vars BEFORE importing config/settings
+    os.environ["ANTHROPIC_API_KEY"] = api_key
+    base_url = xecm_cfg.get("ANTHROPIC_BASE_URL") or os.environ.get("ANTHROPIC_BASE_URL", "")
+    model = xecm_cfg.get("ANTHROPIC_WIKI_MODEL") or os.environ.get("ANTHROPIC_DEFAULT_SONNET_MODEL", "claude-sonnet-4-6")
+    if base_url:
+        os.environ["ANTHROPIC_BASE_URL"] = base_url
+    os.environ["ANTHROPIC_WIKI_MODEL"] = model
+
+    # Import and run wiki generator
+    sys.path.insert(0, str(API_DIR))
+    import asyncio
+    import aiosqlite
+    from services.wiki_generator import WikiGenerator
+
+    async def _run():
+        db = await aiosqlite.connect(str(db_path))
+        try:
+            gen = WikiGenerator(db, str(ws))
+            result = await gen.generate(kb_id="")
+            print(f"Wiki generation: {result['status']}")
+            print(f"Pages created: {result['pages_created']}")
+        finally:
+            await db.close()
+
+    asyncio.run(_run())
 
 
 def cmd_wiki_status(workspace: str) -> None:
