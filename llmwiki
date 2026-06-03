@@ -71,6 +71,12 @@ XECM_URL=http://192.168.0.29/otcs/cs.exe
 XECM_USERNAME=admin
 XECM_PASSWORD=
 XECM_WORKSPACE=LLM Wiki
+
+# Anthropic-compatible API for wiki generation
+# Use Claude Code's built-in token or set your own
+ANTHROPIC_API_KEY=
+ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
+ANTHROPIC_WIKI_MODEL=deepseek-v4-pro[1m]
 """
 
 
@@ -271,6 +277,12 @@ def cmd_serve(workspace: str, open_browser: bool = True, xecm: bool = False) -> 
             env["XECM_WORKSPACE"] = xecm_cfg.get("XECM_WORKSPACE", "")
             if not env["XECM_URL"]:
                 print("Warning: XECM_URL not set in .xecm_config", file=sys.stderr)
+
+    # Anthropic API settings (from .xecm_config or environment)
+    xecm_cfg = _load_xecm_config(ws) if xecm else {}
+    env["ANTHROPIC_API_KEY"] = xecm_cfg.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN", "")
+    env["ANTHROPIC_BASE_URL"] = xecm_cfg.get("ANTHROPIC_BASE_URL") or os.environ.get("ANTHROPIC_BASE_URL", "")
+    env["ANTHROPIC_WIKI_MODEL"] = xecm_cfg.get("ANTHROPIC_WIKI_MODEL") or os.environ.get("ANTHROPIC_DEFAULT_SONNET_MODEL", "claude-sonnet-4-6")
 
     mode_label = "xECM" if xecm else "Local"
     print(f"Starting LLM Wiki ({mode_label} mode) for: {ws}")

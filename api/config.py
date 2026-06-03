@@ -47,8 +47,9 @@ class Settings(BaseSettings):
     XECM_PASSWORD: str = ""
     XECM_WORKSPACE: str = ""
 
-    # Anthropic API for wiki generation (server-side, not Claude Code)
+    # Anthropic-compatible API for wiki generation (server-side, not Claude Code)
     ANTHROPIC_API_KEY: str = ""
+    ANTHROPIC_BASE_URL: str = ""
     ANTHROPIC_WIKI_MODEL: str = "claude-sonnet-4-6"
 
 

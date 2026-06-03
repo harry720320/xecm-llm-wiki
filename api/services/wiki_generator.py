@@ -42,7 +42,10 @@ class WikiGenerator:
     def __init__(self, db, workspace_path: str):
         self._db = db
         self._workspace = Path(workspace_path)
-        self._client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        kwargs = {"api_key": settings.ANTHROPIC_API_KEY}
+        if settings.ANTHROPIC_BASE_URL:
+            kwargs["base_url"] = settings.ANTHROPIC_BASE_URL
+        self._client = anthropic.AsyncAnthropic(**kwargs)
         self._model = settings.ANTHROPIC_WIKI_MODEL
 
     async def generate(self, kb_id: str) -> dict:
