@@ -12,12 +12,14 @@ class XecmSourceDocumentService(LocalDocumentService):
     """Extends LocalDocumentService with xECM source document support.
 
     Source documents downloaded from xECM are cached locally and indexed
-    in SQLite by the startup sync in main.py. This service serves them
-    from the local cache, downloading on-demand if missing.
+    in SQLite by the startup sync in main.py. xECM is read-only — all
+    write operations skip filesystem writes for xECM documents.
     """
 
+    def _is_xecm(self, doc: dict) -> bool:
+        return (doc.get("relative_path") or "").startswith("xecm/")
+
     async def get_content(self, doc_id: str) -> dict | None:
-        """Get document content. For xECM source docs, serves from local cache."""
         doc = await self.doc_repo.get(doc_id)
         if not doc:
             return None
@@ -25,40 +27,63 @@ class XecmSourceDocumentService(LocalDocumentService):
         if doc.get("content"):
             return {"id": doc["id"], "content": doc["content"], "version": doc.get("version", 0)}
 
-        relative = doc.get("relative_path", "")
-        if relative.startswith("xecm/"):
-            cached = Path(settings.WORKSPACE_PATH) / ".llmwiki" / "cache" / "sources" / relative.replace("xecm/", "")
-            if cached.is_file():
-                return {
-                    "id": doc["id"],
-                    "content": f"[Binary file cached at: {cached}]",
-                    "version": doc.get("version", 0),
-                }
+        if self._is_xecm(doc):
+            return {
+                "id": doc["id"],
+                "content": f"[Binary file: {doc['filename']}]",
+                "version": doc.get("version", 0),
+            }
 
         return await super().get_content(doc_id)
 
     async def get_url(self, doc_id: str) -> dict | None:
-        """Get URL for viewing/downloading a document.
-        xECM source docs link to the Content Server directly.
-        """
         doc = await self.doc_repo.get(doc_id)
         if not doc:
             return None
 
-        relative = doc.get("relative_path", "")
-
-        if relative.startswith("xecm/"):
-            # Extract node ID from path: xecm/{node_id}/{filename}
-            parts = relative.split("/")
-            if len(parts) >= 2:
-                node_id = parts[1]
-                xecm_url = settings.XECM_URL.rstrip("/")
-                return {"url": f"{xecm_url}/api/v1/nodes/{node_id}/content"}
-            # Fallback
+        if self._is_xecm(doc):
+            # Link to local file proxy which proxies to Content Server
             api_url = settings.API_URL.rstrip("/")
+            relative = doc.get("relative_path", "")
             return {"url": f"{api_url}/v1/files/{relative}"}
 
         return await super().get_url(doc_id)
+
+    async def update_content(self, doc_id: str, content: str) -> dict | None:
+        doc = await self.doc_repo.get(doc_id)
+        if not doc:
+            return None
+
+        if self._is_xecm(doc):
+            # xECM is read-only — update SQLite only, skip filesystem write
+            row = await self.doc_repo.update_content(doc_id, self.user_id, content)
+            kb_id = await self.doc_repo.get_kb_id(doc_id)
+            if kb_id and content:
+                from services.chunker import chunk_text
+                chunks = chunk_text(content) if content else []
+                await self.chunk_repo.store(doc_id, self.user_id, kb_id, chunks)
+            return row
+
+        return await super().update_content(doc_id, content)
+
+    async def delete(self, doc_id: str) -> bool:
+        doc = await self.doc_repo.get(doc_id)
+        if doc and self._is_xecm(doc):
+            # xECM is read-only — archive in SQLite only
+            return await self.doc_repo.archive(doc_id, self.user_id)
+
+        return await super().delete(doc_id)
+
+    async def update_metadata(self, doc_id: str, fields: dict) -> dict | None:
+        doc = await self.doc_repo.get(doc_id)
+        if doc and self._is_xecm(doc):
+            # xECM is read-only — update SQLite only, skip filesystem rename
+            fields = {k: v for k, v in fields.items() if k != "knowledge_base_id"}
+            if not fields:
+                return doc
+            return await self.doc_repo.update_metadata(doc_id, self.user_id, **fields)
+
+        return await super().update_metadata(doc_id, fields)
 
 
 class XecmServiceFactory:
