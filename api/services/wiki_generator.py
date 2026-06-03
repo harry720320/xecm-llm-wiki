@@ -42,7 +42,11 @@ class WikiGenerator:
     def __init__(self, db, workspace_path: str):
         self._db = db
         self._workspace = Path(workspace_path)
-        kwargs = {"api_key": settings.ANTHROPIC_API_KEY}
+        kwargs = {
+            "api_key": settings.ANTHROPIC_API_KEY,
+            "timeout": 180.0,
+            "max_retries": 2,
+        }
         if settings.ANTHROPIC_BASE_URL:
             kwargs["base_url"] = settings.ANTHROPIC_BASE_URL
         self._client = anthropic.AsyncAnthropic(**kwargs)
@@ -109,17 +113,27 @@ class WikiGenerator:
         )
 
         try:
-            response = await self._client.messages.create(
+            raw_text = ""
+            async with self._client.messages.stream(
                 model=self._model,
                 max_tokens=32000,
                 system=WIKI_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_prompt}],
-            )
+            ) as stream:
+                async for event in stream:
+                    if event.type == "content_block_delta":
+                        if hasattr(event.delta, 'text'):
+                            raw_text += event.delta.text
+                        elif hasattr(event.delta, 'text_delta'):
+                            raw_text += event.delta.text_delta
+                    elif event.type == "content_block_start":
+                        if hasattr(event, 'content_block') and hasattr(event.content_block, 'text'):
+                            raw_text += event.content_block.text
+                    elif event.type == "message_delta":
+                        if hasattr(event, 'delta') and hasattr(event.delta, 'text'):
+                            raw_text += event.delta.text
 
-            raw_text = ""
-            for block in response.content:
-                if hasattr(block, 'text'):
-                    raw_text += block.text
+            logger.info("Streaming response: %d chars", len(raw_text))
             return self._parse_pages(raw_text)
 
         except Exception as e:
@@ -127,16 +141,47 @@ class WikiGenerator:
             return []
 
     def _parse_pages(self, raw_text: str) -> list[dict]:
-        """Parse LLM output into structured pages."""
-        pages = []
-        pattern = r'(?:###\s+`([^`]+\.md)`|```markdown\s+([^\n]+\.md))\n(.*?)```'
-        matches = re.findall(pattern, raw_text, re.DOTALL)
+        """Parse LLM output into structured pages.
 
-        for match in matches:
-            path = match[0] or match[1]
-            content = (match[2] if len(match) > 2 else match[1]).strip()
-            if path and content:
-                pages.append({"path": path, "content": content})
+        Handles multiple formats:
+        - ### `wiki/path/page.md` (backtick-wrapped heading)
+        - ### wiki/path/page.md (plain heading)
+        - # wiki/path/page.md (h1 heading inside code block)
+        - ```markdown ... ``` (entire output in a single code block)
+        """
+        pages = []
+
+        # Strip wrapping code block if present
+        text = raw_text.strip()
+        if text.startswith("```") and text.endswith("```"):
+            # Extract content from code block
+            lines = text.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            text = "\n".join(lines)
+
+        # Try patterns for page headers followed by content
+        patterns = [
+            # ### `wiki/path/page.md` (backtick-wrapped h3)
+            r'(?:^|\n)###\s+`(wiki/[^`]+\.md)`\s*\n(.*?)(?=\n###\s+`wiki/|\n###\s+wiki/|\Z)',
+            # ### wiki/path/page.md (bare h3)
+            r'(?:^|\n)###\s+(wiki/[^\s\n]+\.md)\s*\n(.*?)(?=\n###\s+wiki/|\n###\s+`wiki/|\Z)',
+            # # wiki/path/page.md (h1 heading)
+            r'(?:^|\n)#\s+(wiki/[^\s\n]+\.md)\s*\n(.*?)(?=\n#\s+wiki/|\n#\s+`wiki/|\Z)',
+        ]
+
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.DOTALL)
+            if matches:
+                for match in matches:
+                    path = match[0].strip()
+                    content = match[1].strip()
+                    if path and content and not path.startswith("http"):
+                        pages.append({"path": path, "content": content})
+                if pages:
+                    break
 
         return pages
 
