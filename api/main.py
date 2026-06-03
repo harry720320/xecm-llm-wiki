@@ -224,12 +224,20 @@ async def _local_lifespan_inner(app: FastAPI):
         if xecm_url and xecm_user and xecm_pass:
             xecm_client = XecmClient(url=xecm_url, username=xecm_user, password=xecm_pass)
             try:
-                ws_node = await xecm_client.find_workspace(xecm_ws)
-                if not ws_node:
-                    logger.warning("xECM workspace '%s' not found — skipping sync", xecm_ws)
+                # "Enterprise" is the root workspace (node 2000)
+                if xecm_ws.lower() == "enterprise":
+                    ws_id = 2000
+                    logger.info("xECM using Enterprise workspace (node 2000)")
                 else:
-                    ws_id = ws_node["id"]
-                    logger.info("xECM workspace '%s' → node %s", xecm_ws, ws_id)
+                    ws_node = await xecm_client.find_workspace(xecm_ws)
+                    if not ws_node:
+                        logger.warning("xECM workspace '%s' not found — skipping sync", xecm_ws)
+                        ws_id = None
+                    else:
+                        ws_id = ws_node["id"]
+                        logger.info("xECM workspace '%s' -> node %s", xecm_ws, ws_id)
+
+                if ws_id is not None:
                     source_docs = await XecmSourceReader(xecm_client).discover(ws_id)
                     cache_root = workspace / ".llmwiki" / "cache" / "sources"
 
