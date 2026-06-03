@@ -33,6 +33,13 @@ MCP_DIR = REPO_ROOT / "mcp"
 WEB_DIR = REPO_ROOT / "web"
 
 
+def _resolve_workspace(path: str) -> Path:
+    """Resolve a workspace path, expanding ~ to the user's home directory."""
+    if path.startswith("~"):
+        path = str(Path.home() / path.lstrip("~/\\"))
+    return Path(path).resolve()
+
+
 def _sanitize_name(name: str) -> str:
     slug = name.lower().strip()
     slug = re.sub(r"[^a-z0-9\s-]", "", slug)
@@ -68,7 +75,7 @@ XECM_WORKSPACE=LLM Wiki
 
 
 def cmd_init(workspace: str, xecm: bool = False) -> None:
-    ws = Path(workspace).resolve()
+    ws = _resolve_workspace(workspace)
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "wiki").mkdir(exist_ok=True)
     (ws / ".llmwiki").mkdir(exist_ok=True)
@@ -238,7 +245,7 @@ def _index_existing_files(ws: Path, db_path: Path, user_id: str, ws_id: str) -> 
 
 
 def cmd_serve(workspace: str, open_browser: bool = True, xecm: bool = False) -> None:
-    ws = Path(workspace).resolve()
+    ws = _resolve_workspace(workspace)
     if not (ws / ".llmwiki" / "index.db").exists():
         print(f"Workspace not initialized. Run: llmwiki init {ws}", file=sys.stderr)
         sys.exit(1)
@@ -314,14 +321,14 @@ def cmd_serve(workspace: str, open_browser: bool = True, xecm: bool = False) -> 
 
 
 def cmd_open(workspace: str, xecm: bool = False) -> None:
-    ws = Path(workspace).resolve()
+    ws = _resolve_workspace(workspace)
     if not (ws / ".llmwiki" / "index.db").exists():
         cmd_init(str(ws), xecm=xecm)
     cmd_serve(str(ws), open_browser=True, xecm=xecm)
 
 
 def cmd_mcp(workspace: str) -> None:
-    ws = Path(workspace).resolve()
+    ws = _resolve_workspace(workspace)
     if not (ws / ".llmwiki" / "index.db").exists():
         cmd_init(str(ws))
 
@@ -336,7 +343,7 @@ def cmd_mcp(workspace: str) -> None:
 
 
 def cmd_mcp_config(workspace: str, name: str | None = None) -> None:
-    ws = Path(workspace).resolve()
+    ws = _resolve_workspace(workspace)
     server_name = name or f"llmwiki-{_sanitize_name(ws.name)}"
     llmwiki_path = str(REPO_ROOT / "llmwiki")
 
@@ -357,7 +364,7 @@ def cmd_mcp_config(workspace: str, name: str | None = None) -> None:
 
 
 def cmd_reindex(workspace: str) -> None:
-    ws = Path(workspace).resolve()
+    ws = _resolve_workspace(workspace)
     db_path = ws / ".llmwiki" / "index.db"
     if not db_path.exists():
         print(f"No index found. Run: llmwiki init {ws}", file=sys.stderr)
@@ -386,7 +393,7 @@ def cmd_reindex(workspace: str) -> None:
 
 def cmd_wiki_generate(workspace: str) -> None:
     """Trigger wiki generation via the API server."""
-    ws = Path(workspace).resolve()
+    ws = _resolve_workspace(workspace)
     xecm_cfg = _load_xecm_config(ws)
     api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN") or ""
 
