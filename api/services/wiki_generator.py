@@ -18,21 +18,30 @@ logger = logging.getLogger(__name__)
 
 WIKI_SYSTEM_PROMPT = """You are a wiki generator. Given source documents, create a comprehensive wiki.
 
-Output format — write wiki pages as markdown files:
+CRITICAL FORMAT RULE: You MUST output every wiki page in this exact format:
 
-1. Index page (wiki/index.md): Overview of all topics covered in the source documents.
+### wiki/index.md
+( page content )
 
-2. Entity pages (wiki/entities/<slug>.md): One page per significant entity (person, company, product, technology, concept). Include summary, key details from sources, citations [source: filename], and cross-references.
+### wiki/entities/my-entity.md
+( page content )
 
-3. Topic pages (wiki/topics/<slug>.md): Broader topics that span multiple documents.
+### wiki/topics/my-topic.md
+( page content )
+
+Each page starts with ### wiki/path.md on its own line. The ### must be at the beginning of the line. Then the page content follows. Pages are separated by a blank line.
+
+Generate AT LEAST these pages:
+1. wiki/index.md — overview of all topics
+2. wiki/entities/<slug>.md — at least 3 entity pages for key concepts found in sources
+3. wiki/topics/<slug>.md — at least 2 topic pages
 
 Rules:
 - Every factual claim MUST include a citation: [source: filename]
 - Use the exact filenames from the source documents for citations
-- If sources disagree, note the disagreement
-- No boilerplate intros
 - Page titles should be concise (3-6 words)
-- Use markdown headings, lists, and tables where appropriate
+- Use markdown headings, lists, and tables
+- CRITICAL: Output MULTIPLE pages using the ### wiki/path.md format
 """
 
 
@@ -103,13 +112,14 @@ class WikiGenerator:
             return []
 
         user_prompt = (
-            f"Generate a wiki from the following source documents. "
-            f"Output each wiki page as a markdown code block with the file path:\n\n"
+            f"Generate multiple wiki pages from these source documents. "
+            f"REMEMBER: Every page MUST start with ### wiki/path.md on its own line.\n\n"
+            f"Required pages:\n"
+            f"- wiki/index.md\n"
+            f"- wiki/entities/*.md (at least 3 entity pages)\n"
+            f"- wiki/topics/*.md (at least 2 topic pages)\n\n"
             f"{source_text}\n\n"
-            f"Generate: 1) wiki/index.md (overview), "
-            f"2) wiki/entities/*.md (entity pages), "
-            f"3) wiki/topics/*.md (topic pages). "
-            f"Include citations [source: filename] for all facts."
+            f"Now output the wiki pages. Start each page with ### wiki/path.md:"
         )
 
         try:
@@ -143,45 +153,48 @@ class WikiGenerator:
     def _parse_pages(self, raw_text: str) -> list[dict]:
         """Parse LLM output into structured pages.
 
-        Handles multiple formats:
-        - ### `wiki/path/page.md` (backtick-wrapped heading)
-        - ### wiki/path/page.md (plain heading)
-        - # wiki/path/page.md (h1 heading inside code block)
-        - ```markdown ... ``` (entire output in a single code block)
+        Handles every format the LLM might produce:
+        - ### wiki/path/page.md (plain h3 heading)
+        - # wiki/path/page.md (h1 heading)
+        - Backtick-wrapped variants
+        - Code block wrapped content
+        - Single page fallback (saves as wiki/index.md)
         """
         pages = []
-
-        # Strip wrapping code block if present
         text = raw_text.strip()
-        if text.startswith("```") and text.endswith("```"):
-            # Extract content from code block
+
+        # Strip wrapping code block markers
+        if text.startswith("```"):
             lines = text.split("\n")
             if lines[0].startswith("```"):
                 lines = lines[1:]
             if lines and lines[-1].strip() == "```":
                 lines = lines[:-1]
-            text = "\n".join(lines)
+            text = "\n".join(lines).strip()
 
-        # Try patterns for page headers followed by content
-        patterns = [
-            # ### `wiki/path/page.md` (backtick-wrapped h3)
-            r'(?:^|\n)###\s+`(wiki/[^`]+\.md)`\s*\n(.*?)(?=\n###\s+`wiki/|\n###\s+wiki/|\Z)',
-            # ### wiki/path/page.md (bare h3)
-            r'(?:^|\n)###\s+(wiki/[^\s\n]+\.md)\s*\n(.*?)(?=\n###\s+wiki/|\n###\s+`wiki/|\Z)',
-            # # wiki/path/page.md (h1 heading)
-            r'(?:^|\n)#\s+(wiki/[^\s\n]+\.md)\s*\n(.*?)(?=\n#\s+wiki/|\n#\s+`wiki/|\Z)',
-        ]
+        # Split on ### wiki/ or # wiki/ page headers (any heading level 1-3)
+        marker_pattern = r'(?:^|\n)(?=(?:#{1,3})\s+`?wiki/[^\s`\n]+\.md`?\s*\n)'
+        sections = re.split(marker_pattern, text)
 
-        for pattern in patterns:
-            matches = re.findall(pattern, text, re.DOTALL)
-            if matches:
-                for match in matches:
-                    path = match[0].strip()
-                    content = match[1].strip()
-                    if path and content and not path.startswith("http"):
-                        pages.append({"path": path, "content": content})
-                if pages:
-                    break
+        for section in sections:
+            section = section.strip()
+            if not section:
+                continue
+            m = re.match(
+                r'(?:#{1,3})\s+`?(wiki/[^\s`\n]+\.md)`?\s*\n(.*)',
+                section, re.DOTALL
+            )
+            if m:
+                pages.append({"path": m.group(1).strip(), "content": m.group(2).strip()})
+
+        # Fallback: single page with no page delimiters
+        if not pages and len(text) > 200:
+            title_match = re.match(r'#\s+(.+)', text)
+            if title_match:
+                slug = re.sub(r'[^\w-]', '', title_match.group(1).lower().replace(' ', '-')[:50])
+            else:
+                slug = 'index'
+            pages.append({"path": f"wiki/{slug}.md", "content": text})
 
         return pages
 
